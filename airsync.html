@@ -1,0 +1,1147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101519">
+  <meta name="description" content="A shared whiteboard with a wireless drawing pad. Pair your phone and draw together, directly between browsers.">
+  <meta name="referrer" content="no-referrer">
+  <title>Airink — a little room for big ideas</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23101519'/%3E%3Cpath d='M8 23L16 8l8 15M11 18h10' fill='none' stroke='%2394eed7' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <!-- The only external dependencies. Drawing works if either CDN is unavailable. -->
+  <script defer src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101519; --panel: rgba(25, 32, 37, .8); --panel-solid: #192025;
+      --board: #161d22; --text: #eef4f3; --muted: #9caeb4; --line: rgba(194, 221, 229, .13);
+      --accent: #94eed7; --accent-ink: #102d26; --warning: #f6c773; --danger: #ff969f;
+      --shadow: 0 16px 50px #0003; --radius: 20px;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-synthesis: none;
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-size: 16px; overflow: hidden; }
+    body::before { content: ""; position: fixed; inset: 0; pointer-events: none;
+      background: radial-gradient(ellipse at 83% 5%, #2b605323, transparent 43%); }
+    button, input { font: inherit; }
+    button { cursor: pointer; color: inherit; }
+    button, input { -webkit-tap-highlight-color: transparent; }
+    button:disabled { cursor: default; opacity: .36; }
+    button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+    a { color: var(--accent); }
+    button { transition: background .16s, border-color .16s, color .16s; }
+    svg.icon { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+    .app { position: relative; height: 100dvh; height: 100svh; display: flex; flex-direction: column; padding: 0 26px; }
+    @supports (height: 100dvh) { .app { height: 100dvh; } }
+    .topbar { min-height: 88px; display: flex; align-items: center; gap: 24px; border-bottom: 1px solid var(--line); }
+    .brand { display: flex; align-items: center; gap: 11px; white-space: nowrap; }
+    .brandmark { width: 33px; height: 33px; color: var(--accent); }
+    .brandname { font-size: 24px; font-weight: 650; letter-spacing: -.9px; }
+    .brand-divider { width: 1px; height: 24px; background: var(--line); margin-left: 3px; }
+    .brand-context { color: var(--muted); font-size: 14px; }
+    .mode-switch { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; margin: auto; background: #0a10144d; }
+    .mode-switch button { border: 0; border-radius: 8px; background: transparent; color: var(--muted); padding: 9px 16px; font-size: 14px; font-weight: 550; display: flex; gap: 8px; align-items: center; }
+    .mode-switch button[aria-pressed="true"] { color: var(--text); background: #2a343b; box-shadow: 0 2px 6px #0003; }
+    .mode-switch .icon { width: 17px; height: 17px; }
+    .top-actions { display: flex; align-items: center; gap: 13px; }
+    .status { display: flex; align-items: center; gap: 9px; font-size: 14px; white-space: nowrap; }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #85949a; }
+    .status[data-state="connecting"] .status-dot { background: var(--warning); animation: pulse 1.3s infinite; }
+    .status[data-state="connected"] .status-dot { background: var(--accent); box-shadow: 0 0 10px #94eed735; }
+    @keyframes pulse { 50% { opacity: .35; } }
+    .icon-button { width: 42px; height: 42px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line); background: #1e272d66; border-radius: 11px; }
+    .icon-button:hover:not(:disabled), .tool:hover:not(:disabled) { background: #34424b; }
+    .main { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 26px; flex: 1; min-height: 0; padding-top: 23px; }
+    .studio { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+    .workspace-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 0 2px 15px; }
+    .workspace-heading h1 { margin: 0; font-size: 16px; font-weight: 550; letter-spacing: -.25px; }
+    .workspace-heading h1 span { color: var(--muted); font-weight: 400; margin-left: 9px; font-size: 14px; }
+    .small-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 1.4px; }
+    .drawing-space { position: relative; flex: 1; min-height: 80px; display: flex; justify-content: center; align-items: center; border-radius: var(--radius);
+      background: #0b101450; border: 1px solid var(--line); overflow: hidden; }
+    .board { position: relative; flex: none; overflow: hidden; background-color: var(--board); box-shadow: 0 0 0 1px #283238;
+      background-image: radial-gradient(circle, #7c95902f .8px, transparent .9px); background-size: 24px 24px; }
+    #canvas { display: block; width: 100%; height: 100%; touch-action: none; user-select: none; -webkit-user-select: none; cursor: crosshair; }
+    #canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+    #canvas[aria-disabled="true"] { cursor: not-allowed; }
+    .empty-hint { position: absolute; inset: 0; pointer-events: none; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 12px; text-align: center; padding: 25px; }
+    .empty-glyph { color: #8ea6a3; margin-bottom: 6px; }
+    .empty-glyph .icon { width: 37px; height: 37px; stroke-width: 1.1; }
+    .empty-hint strong { color: #becbcf; font-size: 20px; font-weight: 450; letter-spacing: -.6px; }
+    .empty-hint span { color: #84969e; font-size: 14px; line-height: 1.6; }
+    #cursors { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+    .remote-cursor { position: absolute; left: 0; top: 0; width: 14px; height: 14px; border: 2px solid var(--accent); border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 0 0 0 3px #10151999; }
+    .remote-cursor span { position: absolute; left: 12px; top: 12px; background: var(--accent); color: var(--accent-ink); padding: 4px 7px; border-radius: 5px; font-size: 12px; white-space: nowrap; }
+    .toolbar-area { display: flex; justify-content: center; padding: 18px 0 8px; flex: none; }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 5px; border: 1px solid #a6d5c724;
+      border-radius: 17px; background: linear-gradient(135deg, #2a363bb8, #1c262be8); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); padding: 8px; box-shadow: var(--shadow); }
+    .tool { width: 43px; height: 43px; border-radius: 10px; border: 1px solid transparent; display: flex; align-items: center; justify-content: center; background: transparent; color: #b8c9cf; position: relative; }
+    .tool[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); box-shadow: 0 3px 10px #0002; }
+    .divider { width: 1px; height: 27px; background: var(--line); margin: 0 6px; }
+    .colors { display: flex; gap: 5px; align-items: center; padding: 0 2px; }
+    .swatch { width: 29px; height: 35px; border: 0; padding: 5px; background: transparent; border-radius: 8px; display: grid; place-items: center; }
+    .swatch::after { content: ""; background: var(--swatch); width: 18px; height: 18px; border-radius: 50%; }
+    .swatch[aria-pressed="true"]::after { box-shadow: 0 0 0 3px #202a30, 0 0 0 4.5px var(--swatch); }
+    .color-wrap { width: 33px; height: 37px; position: relative; display: grid; place-items: center; overflow: hidden; border-radius: 8px; }
+    .color-wrap::before { content: ""; width: 20px; height: 20px; border: 2px solid #e3eeef70; border-radius: 50%; background: conic-gradient(#ff949d,#f9cd82,#92ead4,#88bffa,#c2a5fc,#ff949d); }
+    .color-wrap:focus-within { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .color-wrap input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .001; cursor: pointer; }
+    .size-control { display: flex; gap: 8px; align-items: center; margin: 0 6px; }
+    .size-control input { width: 70px; accent-color: var(--accent); height: 24px; cursor: pointer; }
+    .size-control output { min-width: 21px; font-size: 12px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+    .eraser-button { color: var(--danger); }
+    .canvas-caption { display: flex; justify-content: space-between; gap: 16px; color: var(--muted); font-size: 12px; min-height: 33px; align-items: center; padding: 0 3px; }
+    .caption-key { font-size: 11px; border: 1px solid var(--line); padding: 2px 5px; border-radius: 4px; margin-right: 3px; }
+    .sidebar { display: flex; flex-direction: column; gap: 16px; overflow: auto; padding-bottom: 16px; }
+    .pair-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 23px; background: var(--panel); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+    .pair-card .eyebrow { display: flex; gap: 8px; color: var(--accent); align-items: center; font-size: 12px; text-transform: uppercase; letter-spacing: 1.6px; margin-bottom: 19px; }
+    .pair-card .eyebrow .icon { width: 15px; height: 15px; }
+    .pair-card h2 { font-size: 22px; font-weight: 500; letter-spacing: -.65px; margin: 0 0 9px; line-height: 1.25; }
+    .pair-card p { color: var(--muted); font-size: 14px; line-height: 1.6; margin: 0 0 19px; }
+    .qr-shell { display: flex; align-items: center; justify-content: center; min-height: 203px; border-radius: 14px; background: #edf5f2; margin: 5px 0 16px; padding: 18px; color: #334942; }
+    #qr { display: flex; justify-content: center; }
+    #qr img, #qr canvas { width: 166px; height: 166px; display: block; }
+    .qr-placeholder { text-align: center; max-width: 180px; font-size: 14px; line-height: 1.5; }
+    .qr-placeholder .icon { display: block; margin: 0 auto 10px; width: 27px; height: 27px; }
+    .pair-code-label { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 12px; margin: 8px 0; }
+    .code-row { display: flex; align-items: center; gap: 7px; background: #0b11164f; border: 1px solid var(--line); padding: 12px; border-radius: 10px; }
+    #hostCode { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 14px; letter-spacing: .5px; overflow-wrap: anywhere; line-height: 1.6; flex: 1; user-select: all; }
+    .copy-code { border: 0; background: transparent; color: var(--muted); width: 33px; height: 36px; display: grid; place-items: center; flex: none; }
+    .button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 16px; border: 1px solid var(--line); border-radius: 10px; background: #2b383d; color: var(--text); font-size: 14px; font-weight: 550; }
+    .button:hover:not(:disabled) { background: #374a50; }
+    .button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+    .button.primary:hover:not(:disabled) { background: #b2f5e5; }
+    .button.wide { width: 100%; margin-top: 12px; }
+    .micro { font-size: 12px !important; line-height: 1.5 !important; margin: 11px 0 0 !important; color: #97a9ad !important; }
+    .connection-box { padding: 5px 9px; }
+    .connection-box h3 { margin: 0 0 12px; font-size: 12px; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: 1.4px; }
+    .device-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+    .device-icon { display: grid; place-items: center; width: 37px; height: 40px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); }
+    .device-text { flex: 1; min-width: 0; font-size: 14px; }
+    .device-text span { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .device-label { font-size: 12px; color: var(--muted); }
+    .waiting-note { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 6px 0 0; }
+    .footer { height: 42px; flex: none; display: flex; align-items: center; justify-content: space-between; gap: 15px; color: #84969d; font-size: 12px; }
+    .footer-left { display: flex; align-items: center; gap: 7px; }
+    .footer .icon { width: 13px; height: 13px; }
+    .text-button { background: none; border: none; color: var(--muted); padding: 8px 0; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+    .banner { margin-top: 12px; flex: none; padding: 10px 14px; display: flex; gap: 12px; align-items: center; border: 1px solid #f6c77335; background: #f6c7730b; border-radius: 11px; font-size: 13px; line-height: 1.5; color: #e1c99c; }
+    .banner span { flex: 1; }
+    .banner button { flex: none; background: transparent; border: 1px solid #f6c77340; color: #f6d490; border-radius: 7px; padding: 7px 10px; font-size: 13px; }
+    .join-card { max-width: 430px; width: calc(100% - 36px); max-height: calc(100% - 20px); overflow-y: auto; z-index: 4; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: #1c252bf5; padding: 27px; border: 1px solid #a3c6bf30; border-radius: 20px; box-shadow: var(--shadow); backdrop-filter: blur(24px); }
+    .join-card h2 { font-size: 25px; font-weight: 500; letter-spacing: -.8px; margin: 0 0 10px; }
+    .join-card p { font-size: 14px; color: var(--muted); line-height: 1.6; margin: 0 0 22px; }
+    .join-card label { display: block; font-size: 14px; margin-bottom: 9px; }
+    .join-card input { width: 100%; border: 1px solid #adcdc536; background: #0b1217; border-radius: 10px; padding: 14px 12px; color: var(--text); font-size: 16px; font-family: ui-monospace, SFMono-Regular, monospace; }
+    #joinError { color: var(--danger); font-size: 13px; line-height: 1.5; margin-top: 10px; }
+    .pad-hint { display: none; }
+    body[data-mode="pad"] .main { grid-template-columns: minmax(0, 1fr); }
+    body[data-mode="pad"] .sidebar, body[data-mode="pad"] .host-only { display: none; }
+    body[data-mode="pad"] .pad-hint { display: inline; }
+    body[data-mode="pad"] .workspace-heading { margin-bottom: 13px; }
+    .toast { position: fixed; bottom: max(110px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); z-index: 30; background: #e5f1ed; color: #152c26; box-shadow: var(--shadow); padding: 12px 18px; border-radius: 12px; font-size: 14px; line-height: 1.5; max-width: min(440px, calc(100vw - 32px)); width: max-content; pointer-events: none; }
+    dialog { color: var(--text); background: #1b2429; border: 1px solid #8dafab38; border-radius: 22px; width: min(500px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 28px; box-shadow: 0 30px 100px #0008; }
+    dialog::backdrop { background: #060c10b3; backdrop-filter: blur(6px); }
+    dialog h2 { margin: 0 0 15px; font-size: 24px; font-weight: 500; letter-spacing: -.5px; }
+    dialog p, dialog li { color: #b4c4ca; font-size: 14px; line-height: 1.7; }
+    dialog li { margin-bottom: 9px; }
+    dialog ol { padding-left: 22px; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 23px; }
+    .help-close { float: right; border: none; background: transparent; color: var(--muted); margin: -8px -8px 0 8px; }
+    .help-note { border-top: 1px solid var(--line); padding-top: 15px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    noscript { position: fixed; inset: 20%; background: var(--panel-solid); color: var(--text); padding: 25px; z-index: 100; border: 1px solid var(--line); }
+    @media (max-width: 1160px) {
+      .app { padding: 0 18px; } .main { gap: 18px; grid-template-columns: minmax(0, 1fr) 260px; }
+      .pair-card { padding: 19px; } .brand-context, .brand-divider { display: none; }
+      .toolbar { gap: 3px; } .toolbar .divider { margin: 0 2px; } .tool { width: 38px; height: 40px; }
+      .size-control { margin: 0 3px; } .size-control input { width: 53px; } .swatch { width: 25px; }
+    }
+    @media (max-width: 850px) {
+      .topbar { gap: 12px; min-height: 74px; } .brandname { font-size: 22px; }
+      .mode-switch button { padding: 8px 10px; } .top-actions { gap: 8px; } .status { font-size: 12px; gap: 6px; }
+      .main { grid-template-columns: minmax(0, 1fr) 230px; gap: 14px; padding-top: 16px; }
+      .pair-card { padding: 16px; } .pair-card h2 { font-size: 20px; } .qr-shell { min-height: 181px; padding: 10px; }
+      #qr img, #qr canvas { width: 155px; height: 155px; } .toolbar-area { padding-top: 13px; }
+      .toolbar { max-width: 500px; } .canvas-caption .keyboard-hints { display: none; }
+    }
+    @media (max-width: 650px) {
+      .app { padding: 0 12px; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+      .topbar { min-height: 64px; gap: 8px; flex-wrap: wrap; padding: 9px 0; } .brandmark { width: 27px; height: 27px; }
+      .brand { gap: 6px; } .brandname { font-size: 21px; } .top-actions { margin-left: auto; }
+      .mode-switch { order: 3; width: 100%; margin: 0; justify-content: center; padding: 3px; }
+      .mode-switch button { flex: 1; justify-content: center; padding: 7px 10px; }
+      body[data-mode="pad"][data-ready="true"] .mode-switch { display: none; }
+      .icon-button { width: 35px; height: 35px; } .main { grid-template-columns: 1fr; padding-top: 13px; }
+      .sidebar { position: fixed; inset: auto 12px max(55px, env(safe-area-inset-bottom)) 12px; max-height: calc(100dvh - 165px); z-index: 12; display: none; border-radius: 20px; background: #172025; box-shadow: 0 0 0 9999px #0008; }
+      body.show-pair .sidebar { display: flex; } .pair-card { border: 0; padding: 20px; }
+      .pair-card .eyebrow { margin-bottom: 9px; } .pair-card p { margin-bottom: 12px; }
+      .qr-shell { width: 205px; margin-left: auto; margin-right: auto; }
+      .connection-box { display: none; } .mobile-pair:not([hidden]) { display: inline-flex !important; }
+      .workspace-heading h1 { font-size: 14px; } .workspace-heading h1 span { font-size: 12px; }
+      .small-label { font-size: 11px; } .toolbar-area { padding-top: 11px; } .toolbar { border-radius: 14px; padding: 7px; gap: 3px; max-width: 420px; }
+      .tool { width: 39px; height: 40px; } .colors { gap: 2px; } .swatch { width: 26px; }
+      .size-control input { width: 55px; } .toolbar .divider { margin: 0 2px; }
+      .history-divider { display: none; } .canvas-caption { min-height: 27px; font-size: 11px; }
+      .footer { height: 30px; font-size: 11px; } .footer .text-button { font-size: 11px; }
+      .banner { font-size: 12px; padding: 8px 10px; gap: 8px; margin-top: 9px; }
+      .empty-hint strong { font-size: 18px; } .empty-hint span { font-size: 12px; }
+      .join-card { padding: 21px; } .join-card h2 { font-size: 23px; }
+    }
+    @media (max-height: 520px) and (orientation: landscape) {
+      .app { padding: 0 max(12px, env(safe-area-inset-left)) 0 max(12px, env(safe-area-inset-right)); }
+      .topbar { min-height: 46px; padding: 4px 0; } .brandname { font-size: 20px; } .brandmark { width: 25px; }
+      .main { padding-top: 8px; gap: 10px; } .workspace-heading { margin-bottom: 6px !important; }
+      .toolbar-area { padding-top: 7px; } .toolbar { padding: 4px 6px; gap: 3px; border-radius: 12px; max-width: 100%; }
+      .tool { width: 33px; height: 33px; } .canvas-caption, .footer { display: none; }
+      .studio { padding-bottom: max(5px, env(safe-area-inset-bottom)); }
+      .banner { padding: 4px 10px; margin-top: 5px; } .mode-switch { padding: 2px; }
+      .mode-switch button { padding: 5px 9px; } .join-card { padding: 14px 18px; max-height: calc(100% - 12px); }
+      .join-card h2, .join-card p { display: none; } .join-card input { padding: 10px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+  </style>
+</head>
+<body data-mode="host" data-ready="true">
+  <svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-pen" viewBox="0 0 24 24"><path d="m15 4 5 5M4 20l5-1L21 7a2.1 2.1 0 0 0-4-4L5 15l-1 5Z"/></symbol>
+    <symbol id="i-marker" viewBox="0 0 24 24"><path d="m13 3 8 8-8 8-8-8 8-8ZM7 13l-3 3 4 4 3-3M3 21h9M10 6l8 8"/></symbol>
+    <symbol id="i-eraser" viewBox="0 0 24 24"><path d="m9 20-6-6a2 2 0 0 1 0-3l9-9a2 2 0 0 1 3 0l6 6a2 2 0 0 1 0 3l-9 9H9ZM7 7l10 10M12 20h9"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="m8 4-5 5 5 5M3 9h11a6 6 0 0 1 0 12h-3"/></symbol>
+    <symbol id="i-redo" viewBox="0 0 24 24"><path d="m16 4 5 5-5 5M21 9H10a6 6 0 0 0 0 12h3"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></symbol>
+    <symbol id="i-desktop" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 19h2"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="m10 13 4-4M8 16l-1 1a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0M16 8l1-1a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0" transform="translate(0 1) scale(.94)"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4M12 17h.01"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></symbol>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2 8a16 16 0 0 1 20 0M5 12a11 11 0 0 1 14 0M8.5 16a6 6 0 0 1 7 0M12 20h.01"/></symbol>
+    <symbol id="i-qr" viewBox="0 0 24 24"><path d="M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM15 15h2v2h-2zM21 14v3M14 21h3M21 20v1h-1"/></symbol>
+  </svg>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><svg class="brandmark" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 26 16 5l11 21M10 18h12" stroke="currentColor" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="brandname">airink</span><span class="brand-divider"></span><span class="brand-context">Shared whiteboard</span></div>
+      <nav class="mode-switch" aria-label="Device mode">
+        <button id="hostMode" aria-pressed="true"><svg class="icon"><use href="#i-desktop"/></svg>Host canvas</button>
+        <button id="padMode" aria-pressed="false"><svg class="icon"><use href="#i-phone"/></svg>Touch pad</button>
+      </nav>
+      <div class="top-actions">
+        <div class="status" id="status" data-state="disconnected" role="status"><span class="status-dot"></span><span id="statusText">Disconnected</span></div>
+        <button class="icon-button mobile-pair" id="pairToggle" style="display:none" aria-label="Show pairing code" aria-expanded="false"><svg class="icon"><use href="#i-qr"/></svg></button>
+        <button class="icon-button" id="helpButton" aria-label="Help and shortcuts"><svg class="icon"><use href="#i-help"/></svg></button>
+      </div>
+    </header>
+    <div class="banner" id="banner" hidden><span id="bannerText"></span><button id="retryButton">Retry</button></div>
+    <main class="main">
+      <section class="studio" aria-label="Whiteboard workspace">
+        <div class="workspace-heading"><h1 id="boardTitle">Untitled board <span id="boardModeLabel">/ Host canvas</span></h1><span class="small-label" id="boardAspect">1600 × 1000</span></div>
+        <div class="drawing-space" id="drawingSpace">
+          <div class="board" id="board">
+            <canvas id="canvas" tabindex="0" role="img" aria-label="Shared drawing canvas. Use a mouse, pen, or finger to draw." aria-disabled="false">This whiteboard needs a browser with HTML5 Canvas support.</canvas>
+            <div class="empty-hint" id="emptyHint"><div class="empty-glyph"><svg class="icon"><use href="#i-pen"/></svg></div><strong id="emptyTitle">A little room for big ideas.</strong><span id="emptyCopy">Draw here, or pair your phone<br>and make it your drawing pad.</span></div>
+            <div id="cursors" aria-hidden="true"></div>
+          </div>
+          <form class="join-card" id="joinCard" hidden>
+            <h2>Your phone. Your pen.</h2><p id="joinDescription">Enter the pairing code from the host canvas, or scan its QR code with your camera.</p>
+            <label for="joinCode">Pairing code or link</label><input id="joinCode" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" maxlength="2048" placeholder="Paste a code or pairing link" required>
+            <div id="joinError" role="alert" hidden></div><button class="button primary wide" id="joinButton" type="submit"><svg class="icon"><use href="#i-link"/></svg>Connect to canvas</button>
+            <p class="micro">Keep the host tab open while you draw.</p>
+          </form>
+        </div>
+        <div class="toolbar-area"><div class="toolbar" role="toolbar" aria-label="Drawing tools">
+          <button class="tool" data-tool="pen" aria-label="Pen (P)" aria-pressed="true" title="Pen · P"><svg class="icon"><use href="#i-pen"/></svg></button>
+          <button class="tool" data-tool="marker" aria-label="Highlighter (M)" aria-pressed="false" title="Highlighter · M"><svg class="icon"><use href="#i-marker"/></svg></button>
+          <button class="tool" data-tool="eraser" aria-label="Eraser (E)" aria-pressed="false" title="Eraser · E"><svg class="icon"><use href="#i-eraser"/></svg></button>
+          <span class="divider" aria-hidden="true"></span>
+          <div class="colors" role="group" aria-label="Ink color">
+            <button class="swatch" data-color="#eef4f3" style="--swatch:#eef4f3" aria-label="White" aria-pressed="false" title="White"></button>
+            <button class="swatch" data-color="#94eed7" style="--swatch:#94eed7" aria-label="Mint" aria-pressed="true" title="Mint"></button>
+            <button class="swatch" data-color="#88bffa" style="--swatch:#88bffa" aria-label="Blue" aria-pressed="false" title="Blue"></button>
+            <button class="swatch" data-color="#f6c773" style="--swatch:#f6c773" aria-label="Amber" aria-pressed="false" title="Amber"></button>
+            <button class="swatch" data-color="#ff969f" style="--swatch:#ff969f" aria-label="Coral" aria-pressed="false" title="Coral"></button>
+            <label class="color-wrap" title="Choose any color"><input type="color" id="colorPicker" value="#94eed7" aria-label="Custom ink color"></label>
+          </div>
+          <span class="divider" aria-hidden="true"></span>
+          <label class="size-control" title="Brush size"><span class="sr-only">Brush size in board pixels</span><input id="brushSize" type="range" min="2" max="64" value="5"><output id="sizeValue" for="brushSize">5</output></label>
+          <span class="divider history-divider" aria-hidden="true"></span>
+          <button class="tool" id="undoButton" aria-label="Undo last shared action" title="Undo shared action · ⌘/Ctrl Z" disabled><svg class="icon"><use href="#i-undo"/></svg></button>
+          <button class="tool" id="redoButton" aria-label="Redo shared action" title="Redo · ⌘/Ctrl Shift Z" disabled><svg class="icon"><use href="#i-redo"/></svg></button>
+          <button class="tool eraser-button" id="clearButton" aria-label="Clear shared canvas" title="Clear canvas" disabled><svg class="icon"><use href="#i-trash"/></svg></button>
+        </div></div>
+        <div class="canvas-caption"><span><span id="strokeCount">0 strokes</span><span class="pad-hint"> · <span id="padTip">Turn sideways for more room</span></span></span><span class="keyboard-hints"><kbd class="caption-key">P</kbd> pen &nbsp; <kbd class="caption-key">M</kbd> marker &nbsp; <kbd class="caption-key">E</kbd> eraser</span><span id="latencyLabel">Ready when you are</span></div>
+      </section>
+      <aside class="sidebar" id="sidebar" aria-label="Connect a drawing pad">
+        <section class="pair-card">
+          <div class="eyebrow"><svg class="icon"><use href="#i-wifi"/></svg>Wireless drawing</div>
+          <h2>A second screen.<br>A fresh perspective.</h2><p>Scan to turn your phone or tablet into a touch pad for this canvas.</p>
+          <div class="qr-shell"><div id="qr" aria-label="QR code containing the pairing link"></div><div class="qr-placeholder" id="qrPlaceholder"><svg class="icon"><use href="#i-qr"/></svg><span id="qrPlaceholderText">Preparing your pairing code…</span></div></div>
+          <div class="pair-code-label"><span>Or enter this pairing code</span><span id="codeState">Creating…</span></div>
+          <div class="code-row"><code id="hostCode">—</code><button class="copy-code" id="copyCode" aria-label="Copy pairing code" title="Copy code" disabled><svg class="icon"><use href="#i-copy"/></svg></button></div>
+          <button class="button wide" id="copyLink" disabled><svg class="icon"><use href="#i-link"/></svg>Copy pairing link</button>
+          <p class="micro" id="pairNote">Anyone with this code can edit. Share it only with people you want on your board.</p>
+        </section>
+        <section class="connection-box"><h3>In this session <span id="deviceCount">/ 1</span></h3><div class="device-row"><div class="device-icon"><svg class="icon"><use href="#i-desktop"/></svg></div><div class="device-text">This canvas<span id="hostDeviceStatus">Host device</span></div><span class="device-label">You</span></div><div id="deviceList"></div><p class="waiting-note" id="waitingNote">Your connected touch pads will appear here.</p></section>
+      </aside>
+    </main>
+    <footer class="footer"><span class="footer-left"><svg class="icon"><use href="#i-lock"/></svg><span id="footerText">Your canvas stays in this session</span></span><button class="text-button" id="aboutButton">How pairing works</button></footer>
+  </div>
+  <dialog id="helpDialog" aria-labelledby="helpTitle"><button class="icon-button help-close" id="helpClose" aria-label="Close help"><svg class="icon"><use href="#i-close"/></svg></button><h2 id="helpTitle">A canvas. Any device.</h2><ol><li>Open this page on your computer in <strong>Host canvas</strong> mode.</li><li>Open the same page on your phone and scan the host QR code, or choose <strong>Touch pad</strong> and enter its pairing code.</li><li>Draw with a finger or stylus. Both devices see the same board. Landscape gives your phone more drawing room.</li></ol><p>Pen <strong>P</strong> · Highlighter <strong>M</strong> · Eraser <strong>E</strong><br>Undo <strong>⌘/Ctrl Z</strong> · Redo <strong>⌘/Ctrl Shift Z</strong><br>Brush size <strong>[</strong> and <strong>]</strong></p><p>Undo and redo change the shared board for everyone. Clear can also be undone. Finish all strokes before using these controls. Keep the host tab open; refreshing or closing it ends the session and discards the board.</p><p class="help-note">For QR pairing, publish this one file on GitHub Pages or Cloudflare Pages. A <code>file://</code> or localhost address cannot be opened from another device; open the file on both devices and enter the code manually instead, if their browsers allow local HTML.</p><p>Pairing requires internet access to the CDNs and the free PeerJS signaling service. Drawing travels over encrypted WebRTC. Use the same Wi-Fi for the best chance of a direct connection. Isolated Wi-Fi, VPNs, or strict firewalls may block it. This file includes STUN, but no TURN relay or uptime guarantee.</p></dialog>
+  <dialog id="confirmDialog" aria-labelledby="confirmTitle"><h2 id="confirmTitle">Clear this canvas?</h2><p id="confirmCopy">This clears the board for every connected device. You can undo it.</p><form method="dialog" class="dialog-actions"><button class="button" value="cancel">Cancel</button><button class="button primary" id="confirmAccept" value="confirm">Clear canvas</button></form></dialog>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <noscript>Enable JavaScript to draw and pair devices with Airink.</noscript>
+
+  <script>
+  /*
+   * AIRINK / single-file edition / protocol 1
+   *
+   * Deploy this file as index.html on any static HTTPS host. No build or app
+   * server is required. PeerJS Cloud still supplies signaling; Google STUN
+   * assists NAT traversal. Neither guarantees connectivity on every network.
+   * A room ID is an unlisted, 100-bit bearer invitation, not a user account.
+   * Do not share the code/URL publicly if the board should stay private.
+   *
+   * The host serializes shared operations. Reliable ordered DataChannels carry
+   * bounded point batches, revisioned history, and chunked late-join snapshots.
+   * Pads draw optimistically; host echoes acknowledge the canonical strokes.
+   * No coordinates, images, or history are uploaded to an application server.
+   * History is memory-only. Refreshing the host intentionally starts a new room.
+   */
+  (() => {
+    'use strict';
+    const $ = id => document.getElementById(id);
+    const C = Object.freeze({
+      width: 1600, height: 1000, protocol: 1, label: 'airink-v1',
+      maxPads: 4, batch: 64, maxStrokePoints: 8192, maxActions: 5000,
+      maxTotalPoints: 200000, maxQueuedBytes: 16 * 1024 * 1024,
+      highWater: 128 * 1024, connectTimeout: 14000, heartbeat: 4000
+    });
+    const canvas = $('canvas'), ctx = canvas.getContext('2d', { alpha: true });
+    const cache = document.createElement('canvas'), cacheCtx = cache.getContext('2d');
+    const board = $('board');
+    // An aspect-preserving world keeps strokes and brush sizes identical on every device.
+    let mode = 'host', ready = true, done = [], undone = [], active = new Map();
+    let pendingLocal = new Map(), local = null, pointerId = null, sentOffset = 0;
+    let revision = 0, totalPoints = 0, snapshot = null;
+    let tool = 'pen', color = '#94eed7', sizes = { pen: 5, marker: 28, eraser: 38 };
+    let dirty = true, cacheDirty = true, frame = 0, flushTimer = 0, cursorTimer = 0;
+    let peer = null, hostId = '', targetId = '', hostLink = null, signalOpen = false;
+    let generation = 0, attempt = 0, retryTimer = 0, connectTimer = 0, signalTimer = 0, booted = false;
+    let lastPairingIssue = '';
+    let hostSerial = 0, lastCursor = 0, pairingURL = '', toastTimer = 0;
+    const clients = new Map(), cursorNodes = new Map();
+    const localPrefix = randomCode(12);
+    let strokeSerial = 0;
+
+    function randomCode(length) {
+      const alphabet = '0123456789abcdefghjkmnpqrstvwxyz';
+      const bytes = new Uint8Array(length);
+      crypto.getRandomValues(bytes);
+      return Array.from(bytes, b => alphabet[b & 31]).join('');
+    }
+    function newStrokeId() { return localPrefix + '-' + (++strokeSerial).toString(36); }
+    function fmtCode(id) { return id.replace(/^airink-/, '').toUpperCase().match(/.{1,4}/g)?.join('-') || ''; }
+    function validRoom(id) { return typeof id === 'string' && /^airink-[a-z0-9]{20}$/.test(id); }
+    function parseCode(value) {
+      let raw = value.trim();
+      try { const url = new URL(raw); raw = url.searchParams.get('join') || ''; } catch (_) {}
+      raw = raw.toLowerCase().replace(/^airink-?/, '').replace(/[\s-]/g, '');
+      const id = 'airink-' + raw;
+      return validRoom(id) ? id : '';
+    }
+    function isObject(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
+    function validId(v) { return typeof v === 'string' && /^[a-z0-9-]{1,70}$/.test(v); }
+    function validPoints(points) {
+      return Array.isArray(points) && points.length > 0 && points.length <= C.batch && points.every(p =>
+        Array.isArray(p) && p.length === 2 && p.every(n => Number.isFinite(n) && n >= 0 && n <= 1));
+    }
+    function validStyle(s) {
+      return isObject(s) && validId(s.id) && ['pen','marker','eraser'].includes(s.tool) &&
+        /^#[0-9a-f]{6}$/i.test(s.color) && Number.isFinite(s.size) && s.size >= 2 && s.size <= 64;
+    }
+    function styleOf(s) { return { id: s.id, tool: s.tool, color: s.color, size: s.size, owner: s.owner || '', name: s.name || '' }; }
+    function toast(message) {
+      $('toast').textContent = message; $('toast').hidden = false;
+      clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4200);
+    }
+    function showBanner(message, retry = true) {
+      $('bannerText').textContent = message; $('banner').hidden = !message; $('retryButton').hidden = !retry;
+    }
+    function setStatus(state, message) {
+      $('status').dataset.state = state; $('statusText').textContent = message;
+    }
+    function onlineClients() { return [...clients.values()].filter(c => c.accepted && c.conn.open && !c.closed); }
+    function refreshStatus() {
+      if (mode === 'host') {
+        const n = onlineClients().length;
+        setStatus(n ? 'connected' : signalOpen ? 'disconnected' : 'connecting', n ? 'Connected · ' + n + (n === 1 ? ' pad' : ' pads') : signalOpen ? 'Disconnected' : 'Connecting');
+        $('codeState').textContent = signalOpen ? 'Ready to pair' : 'Unavailable';
+        $('hostDeviceStatus').textContent = n ? 'Sharing this board' : 'Host device';
+        $('footerText').textContent = n ? 'Encrypted peer-to-peer connection' : 'Your canvas stays in this session';
+      } else {
+        setStatus(ready ? 'connected' : (hostLink || retryTimer) ? 'connecting' : 'disconnected', ready ? 'Connected' : (hostLink || retryTimer) ? 'Connecting' : 'Disconnected');
+        $('footerText').textContent = ready ? 'Encrypted peer-to-peer connection' : 'Keep the host canvas open';
+      }
+    }
+    function setReady(value) {
+      ready = value; document.body.dataset.ready = String(value);
+      canvas.setAttribute('aria-disabled', String(mode === 'pad' && !value));
+      $('joinCard').hidden = mode !== 'pad' || value;
+      if (mode === 'pad') $('emptyHint').hidden = !value;
+      refreshStatus(); updateUI();
+    }
+    function visibleStrokes() {
+      let count = 0;
+      for (const op of done) { if (op.kind === 'clear') count = 0; else if (op.tool !== 'eraser') count++; }
+      return count;
+    }
+    function updateUI() {
+      const busy = active.size > 0 || pendingLocal.size > 0;
+      const writable = mode === 'host' || ready;
+      $('undoButton').disabled = !writable || busy || !done.length;
+      $('redoButton').disabled = !writable || busy || !undone.length;
+      $('clearButton').disabled = !writable || busy || !visibleStrokes();
+      const count = visibleStrokes();
+      $('strokeCount').textContent = count + (count === 1 ? ' stroke' : ' strokes');
+      $('emptyHint').hidden = count > 0 || active.size > 0 || pendingLocal.size > 0 || (mode === 'pad' && !ready);
+    }
+    function renderDevices() {
+      const list = $('deviceList'); list.replaceChildren();
+      for (const link of onlineClients()) {
+        const row = document.createElement('div'); row.className = 'device-row';
+        const icon = document.createElement('div'); icon.className = 'device-icon';
+        icon.innerHTML = '<svg class="icon"><use href="#i-phone"/></svg>';
+        const name = document.createElement('div'); name.className = 'device-text'; name.textContent = link.name;
+        const info = document.createElement('span'); info.textContent = 'Connected'; name.append(info);
+        const delay = document.createElement('span'); delay.className = 'device-label';
+        delay.textContent = link.latency == null ? 'Live' : link.latency + ' ms';
+        row.append(icon, name, delay); list.append(row);
+      }
+      const n = onlineClients().length; $('deviceCount').textContent = '/ ' + (n + 1); $('waitingNote').hidden = n > 0;
+      refreshStatus();
+    }
+
+    /* Canvas: one cached committed layer plus current vector strokes. A marker
+       path is painted once per frame, so transparency does not accumulate at joins. */
+    function drawStroke(context, s) {
+      const p = s.points;
+      if (!p.length) return;
+      context.save();
+      context.globalCompositeOperation = s.tool === 'eraser' ? 'destination-out' : 'source-over';
+      context.globalAlpha = s.tool === 'marker' ? .32 : 1;
+      context.strokeStyle = s.color; context.fillStyle = s.color;
+      context.lineWidth = s.size; context.lineCap = 'round'; context.lineJoin = 'round';
+      context.beginPath();
+      if (p.length === 1) {
+        context.arc(p[0][0] * C.width, p[0][1] * C.height, s.size / 2, 0, Math.PI * 2); context.fill();
+      } else {
+        context.moveTo(p[0][0] * C.width, p[0][1] * C.height);
+        for (let i = 1; i < p.length - 1; i++) {
+          const a = p[i], b = p[i + 1];
+          context.quadraticCurveTo(a[0] * C.width, a[1] * C.height, (a[0] + b[0]) * C.width / 2, (a[1] + b[1]) * C.height / 2);
+        }
+        const end = p[p.length - 1]; context.lineTo(end[0] * C.width, end[1] * C.height); context.stroke();
+      }
+      context.restore();
+    }
+    function clearContext(context) {
+      context.save(); context.setTransform(1,0,0,1,0,0); context.clearRect(0,0,context.canvas.width,context.canvas.height); context.restore();
+    }
+    function rebuildCache() {
+      clearContext(cacheCtx);
+      cacheCtx.setTransform(cache.width / C.width, 0, 0, cache.height / C.height, 0, 0);
+      // Everything before the latest clear is invisible, but remains undoable.
+      let start = 0;
+      for (let i = done.length - 1; i >= 0; i--) if (done[i].kind === 'clear') { start = i + 1; break; }
+      for (let i = start; i < done.length; i++) if (done[i].kind === 'stroke') drawStroke(cacheCtx, done[i]);
+      cacheDirty = false;
+    }
+    function paint() {
+      frame = 0;
+      if (!dirty || !canvas.width) return;
+      if (cacheDirty) rebuildCache();
+      ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(cache,0,0);
+      ctx.setTransform(canvas.width / C.width,0,0,canvas.height / C.height,0,0);
+      for (const s of active.values()) if (!pendingLocal.has(s.id)) drawStroke(ctx,s);
+      for (const s of pendingLocal.values()) drawStroke(ctx,s);
+      dirty = false;
+    }
+    function invalidate(rebuild = false) { dirty = true; cacheDirty ||= rebuild; if (!frame) frame = requestAnimationFrame(paint); }
+    function fitCanvas() {
+      const space = $('drawingSpace');
+      const w = Math.max(1, Math.min(space.clientWidth - 2, (space.clientHeight - 2) * C.width / C.height));
+      const h = w * C.height / C.width;
+      board.style.width = w + 'px'; board.style.height = h + 'px';
+      // Respect Retina/4K scale, with an area cap to avoid mobile canvas allocation failures.
+      const dpr = Math.min(window.devicePixelRatio || 1, Math.sqrt(16000000 / (w * h)));
+      const pw = Math.max(1, Math.round(w * dpr)), ph = Math.max(1, Math.round(h * dpr));
+      if (canvas.width !== pw || canvas.height !== ph) {
+        canvas.width = cache.width = pw; canvas.height = cache.height = ph; invalidate(true);
+      }
+      $('padTip').textContent = innerWidth < innerHeight ? 'Turn sideways for more room' : 'Draw anywhere on the canvas';
+    }
+    new ResizeObserver(fitCanvas).observe($('drawingSpace'));
+    window.addEventListener('resize', fitCanvas);
+    // Moving a window between displays can change DPR without changing CSS dimensions.
+    let dprMedia;
+    function watchDpr() {
+      if (dprMedia) dprMedia.removeEventListener('change', watchDpr);
+      dprMedia = matchMedia('(resolution: ' + (devicePixelRatio || 1) + 'dppx)');
+      dprMedia.addEventListener('change', watchDpr, { once: true }); fitCanvas();
+    }
+    watchDpr();
+
+    /* Pointer input is local first. Batches are bounded and flushed on pointerup,
+       cancellation, lost capture, and when the page moves into the background. */
+    function pointFrom(e) {
+      const r = canvas.getBoundingClientRect();
+      return [Math.round(Math.max(0, Math.min(1, (e.clientX-r.left) / r.width)) * 100000) / 100000,
+              Math.round(Math.max(0, Math.min(1, (e.clientY-r.top) / r.height)) * 100000) / 100000];
+    }
+    function startPointer(e) {
+      if (!e.isPrimary || e.button !== 0 || local || pendingLocal.size >= 32 || (mode === 'pad' && !ready)) return;
+      e.preventDefault();
+      try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+      pointerId = e.pointerId;
+      local = { ...styleOf({id:newStrokeId(),tool,color,size:sizes[tool]}), kind:'stroke', points:[pointFrom(e)], owner:mode==='host'?'host':'local', name:'You' };
+      pendingLocal.set(local.id,local); sentOffset = 1;
+      submit({type:'start', stroke:{...styleOf(local),points:[local.points[0]]}});
+      invalidate(); updateUI();
+    }
+    function appendPoint(p) {
+      if (!local) return;
+      const previous = local.points[local.points.length-1];
+      if (Math.hypot((p[0]-previous[0])*C.width,(p[1]-previous[1])*C.height) < .55) return;
+      local.points.push(p);
+      if (local.points.length >= C.maxStrokePoints) { finishPointer(); toast('Long stroke saved. Lift your pen to start another.'); }
+    }
+    function movePointer(e) {
+      if (!e.isPrimary) return;
+      if (local && e.pointerId === pointerId) {
+        e.preventDefault();
+        const events = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
+        for (const sample of events.length ? events : [e]) appendPoint(pointFrom(sample));
+        if (!flushTimer) flushTimer = setTimeout(flushPoints,16);
+        invalidate();
+      }
+      sendCursor(pointFrom(e));
+    }
+    function flushPoints() {
+      clearTimeout(flushTimer); flushTimer = 0;
+      if (!local) return;
+      while (local && sentOffset < local.points.length) {
+        const end = Math.min(sentOffset + C.batch, local.points.length);
+        submit({type:'points', id:local.id, offset:sentOffset, points:local.points.slice(sentOffset,end)});
+        sentOffset = end;
+      }
+    }
+    function finishPointer(e) {
+      if (!local || (e && e.pointerId !== pointerId)) return;
+      if (e && e.type === 'pointerup') appendPoint(pointFrom(e));
+      if (!local) return;
+      flushPoints();
+      const id = local.id, captured = pointerId;
+      local = null; pointerId = null;
+      submit({type:'end',id});
+      try { if (canvas.hasPointerCapture(captured)) canvas.releasePointerCapture(captured); } catch (_) {}
+      if (e?.pointerType === 'touch') sendCursor(null,true);
+      invalidate(); updateUI();
+    }
+    function abandonLocal(message = '') {
+      const hadLocal = pendingLocal.size > 0;
+      clearTimeout(flushTimer); flushTimer = 0; local = null; pointerId = null; pendingLocal.clear();
+      if (hadLocal && message) toast(message);
+      invalidate(); updateUI();
+    }
+    canvas.addEventListener('pointerdown',startPointer);
+    canvas.addEventListener('pointermove',movePointer);
+    for (const type of ['pointerup','pointercancel','lostpointercapture']) canvas.addEventListener(type,finishPointer);
+    canvas.addEventListener('pointerleave',() => { if (!local) sendCursor(null,true); });
+    canvas.addEventListener('contextmenu',e => e.preventDefault());
+    function sendCursor(point, force = false) {
+      const now = performance.now(); if (!force && now-lastCursor < 40) return; lastCursor = now;
+      const message = {type:'cursor', point, color, size:sizes[tool], tool};
+      if (mode === 'host') broadcast({...message,owner:'host',name:'Host'},true);
+      else if (ready && hostLink) send(hostLink,message,true);
+    }
+    function displayCursor(m) {
+      if (typeof m.owner !== 'string' || m.owner.length > 100 || typeof m.name !== 'string' || m.name.length > 24) return;
+      if (!m.point) { removeCursor(m.owner); return; }
+      if (!validPoints([m.point]) || !/^#[0-9a-f]{6}$/i.test(m.color)) return;
+      let entry = cursorNodes.get(m.owner);
+      if (!entry) {
+        const node = document.createElement('div'); node.className = 'remote-cursor';
+        const label = document.createElement('span'); node.append(label); $('cursors').append(node);
+        entry = {node,label,time:0}; cursorNodes.set(m.owner,entry);
+      }
+      entry.node.style.left = m.point[0]*100+'%'; entry.node.style.top = m.point[1]*100+'%';
+      entry.node.style.borderColor = m.color; entry.label.style.background = m.color; entry.label.textContent = m.name;
+      entry.time = Date.now();
+    }
+    function removeCursor(owner) { const e = cursorNodes.get(owner); if (e) { e.node.remove(); cursorNodes.delete(owner); } }
+    function clearCursors() { for (const key of cursorNodes.keys()) removeCursor(key); }
+    cursorTimer = setInterval(() => { for (const [key,c] of cursorNodes) if (Date.now()-c.time > 1800) removeCursor(key); },700);
+
+    /* Canonical document operations. Only the host originates revisions. */
+    function beginCanonical(s) {
+      active.set(s.id,{...styleOf(s),kind:'stroke',points:s.points.slice(),updated:Date.now()});
+      invalidate(); updateUI();
+    }
+    function appendCanonical(m) {
+      const s = active.get(m.id);
+      if (!s || m.offset !== s.points.length || !validPoints(m.points) || s.points.length+m.points.length > C.maxStrokePoints) return false;
+      s.points.push(...m.points); s.updated = Date.now(); invalidate(); return true;
+    }
+    function applyCommit(m) {
+      const s = active.get(m.id);
+      if (!s) return false;
+      active.delete(m.id); pendingLocal.delete(m.id);
+      totalPoints -= undone.reduce((sum,op)=>sum+(op.points?.length || 0),0);
+      done.push(s); totalPoints += s.points.length; undone = []; revision = m.rev;
+      if (local?.id === m.id) { local = null; pointerId = null; }
+      if (!cacheDirty) drawStroke(cacheCtx,s);
+      invalidate(); updateUI(); return true;
+    }
+    function applyHistory(m) {
+      if (m.action === 'undo') { const op=done.pop(); if (!op) return false; undone.push(op); }
+      else if (m.action === 'redo') { const op=undone.pop(); if (!op) return false; done.push(op); }
+      else if (m.action === 'clear') { done.push({kind:'clear',id:m.id}); undone=[]; }
+      else return false;
+      revision=m.rev; totalPoints=done.concat(undone).reduce((sum,op)=>sum+(op.points?.length || 0),0);
+      invalidate(true); updateUI(); return true;
+    }
+    function reject(link, message, id) {
+      if (link) send(link,{type:'notice',message,id});
+      else { if (id) { pendingLocal.delete(id); if(local?.id === id) {local=null;pointerId=null;} } toast(message); invalidate(); updateUI(); }
+    }
+    function submit(m) {
+      if (mode === 'host') hostReceive(null,m);
+      else if (ready && hostLink) send(hostLink,m);
+    }
+    function hostReceive(link,m) {
+      if (!isObject(m) || typeof m.type !== 'string') return;
+      const owner = link ? link.conn.peer : 'host';
+      if (m.type === 'start') {
+        const s=m.stroke;
+        if (!validStyle(s) || !validPoints(s.points) || s.points.length!==1 || active.has(s.id)) return;
+        if ([...active.values()].some(a=>a.owner===owner)) return;
+        if (done.some(x=>x.id===s.id) || undone.some(x=>x.id===s.id)) return;
+        if (done.length+undone.length>=C.maxActions || totalPoints+C.maxStrokePoints*(active.size+1)>C.maxTotalPoints) {
+          reject(link,'This session has reached its memory limit. Open a new host tab for a fresh board.',s.id); return;
+        }
+        const clean={...styleOf(s),owner,name:link?link.name:'Host',points:s.points};
+        beginCanonical(clean); broadcast({type:'start',stroke:clean});
+      } else if (m.type === 'points') {
+        if (active.get(m.id)?.owner!==owner) return;
+        if (appendCanonical(m)) broadcast({type:'points',id:m.id,offset:m.offset,points:m.points});
+      } else if (m.type === 'end') {
+        if (active.get(m.id)?.owner!==owner) return;
+        const event={type:'commit',id:m.id,rev:revision+1}; applyCommit(event); broadcast(event);
+      } else if (m.type === 'history') {
+        if (!['undo','redo','clear'].includes(m.action)) return;
+        if (active.size) { reject(link,'Finish drawing on all devices before changing shared history.'); return; }
+        if ((m.action==='undo'&&!done.length)||(m.action==='redo'&&!undone.length)) return;
+        if (m.action==='clear' && (!visibleStrokes() || done.length>=C.maxActions)) return;
+        const event={type:'history',action:m.action,id:newStrokeId(),rev:revision+1}; applyHistory(event); broadcast(event);
+      } else if (m.type === 'cursor' && link) {
+        if (m.point!==null && !validPoints([m.point])) return;
+        if (!/^#[0-9a-f]{6}$/i.test(m.color)) return;
+        const event={type:'cursor',point:m.point,color:m.color,owner,name:link.name};
+        displayCursor(event); broadcast(event,true,link);
+      } else if (m.type === 'resync' && link) {
+        if (Date.now()-(link.lastSync||0)>2000) sendSnapshot(link);
+      }
+    }
+    function finishOwner(owner) {
+      for (const s of [...active.values()]) if (s.owner===owner) {
+        const event={type:'commit',id:s.id,rev:revision+1}; applyCommit(event); broadcast(event);
+      }
+      removeCursor(owner); broadcast({type:'cursor',point:null,owner,name:''},true);
+    }
+
+    /* Snapshots are queued before subsequent live events. Each message remains
+       small enough for mobile DataChannels; reconnect replaces all client state. */
+    function sendSnapshot(link) {
+      link.lastSync=Date.now();
+      const messages=[{type:'sync-start',rev:revision,actions:done.length+undone.length}];
+      function pack(s,stack) {
+        messages.push({type:'sync-op',stack,op:s.kind==='clear'?{kind:'clear',id:s.id}:{...styleOf(s),kind:'stroke',count:s.points.length}});
+        if (s.kind!=='clear') for(let i=0;i<s.points.length;i+=C.batch) messages.push({type:'sync-points',id:s.id,offset:i,points:s.points.slice(i,i+C.batch)});
+      }
+      for (const op of done) pack(op,'done');
+      for (const op of undone) pack(op,'undone');
+      for (const op of active.values()) pack(op,'active');
+      messages.push({type:'sync-end',rev:revision});
+      for (const message of messages) if (!send(link,message)) break;
+    }
+    function requestSync() {
+      if (!hostLink || snapshot) return;
+      abandonLocal(); active.clear(); setReady(false); send(hostLink,{type:'resync'});
+      $('joinDescription').textContent='Refreshing the shared board…';
+    }
+    function padReceive(m) {
+      if (!isObject(m) || typeof m.type!=='string') return;
+      if (m.type==='sync-start') {
+        if (!Number.isSafeInteger(m.rev)||m.rev<0||!Number.isInteger(m.actions)||m.actions<0||m.actions>C.maxActions) return;
+        abandonLocal(); clearCursors(); setReady(false);
+        snapshot={done:[],undone:[],active:new Map(),last:null,points:0,actions:m.actions,rev:m.rev};
+        return;
+      }
+      if (m.type==='sync-op' && snapshot) {
+        if (!['done','undone','active'].includes(m.stack)||!isObject(m.op)) return failSync();
+        if (snapshot.last && snapshot.last.points.length!==snapshot.last.count) return failSync();
+        const s=m.op;
+        if (s.kind!=='clear' && (!validStyle(s)||!Number.isInteger(s.count)||s.count<1||s.count>C.maxStrokePoints)) return failSync();
+        if (s.kind==='clear' && (m.stack==='active'||!validId(s.id))) return failSync();
+        const op=s.kind==='clear'?{kind:'clear',id:s.id}:{...styleOf(s),kind:'stroke',points:[],count:s.count};
+        if (m.stack==='active') {
+          if (snapshot.active.size >= C.maxPads + 1 || snapshot.active.has(op.id)) return failSync();
+          snapshot.active.set(op.id,op);
+        } else {
+          if (snapshot.done.length + snapshot.undone.length >= snapshot.actions) return failSync();
+          snapshot[m.stack].push(op);
+        }
+        snapshot.last=op.kind==='stroke'?op:null; return;
+      }
+      if (m.type==='sync-points' && snapshot) {
+        const s=snapshot.last;
+        if (!s||s.id!==m.id||!validPoints(m.points)||m.offset!==s.points.length||s.points.length+m.points.length>s.count) return failSync();
+        snapshot.points+=m.points.length; if(snapshot.points>C.maxTotalPoints) return failSync();
+        s.points.push(...m.points); return;
+      }
+      if (m.type==='sync-end' && snapshot) {
+        if (m.rev!==snapshot.rev||snapshot.done.length+snapshot.undone.length!==snapshot.actions||(snapshot.last&&snapshot.last.points.length!==snapshot.last.count)) return failSync();
+        done=snapshot.done; undone=snapshot.undone; active=snapshot.active; revision=snapshot.rev;
+        totalPoints=snapshot.points; snapshot=null; attempt=0; lastPairingIssue=''; clearTimeout(connectTimer);
+        $('joinButton').disabled=false; $('joinButton').textContent='Connect to canvas';
+        showBanner(''); setReady(true); invalidate(true); toast('Connected. Your canvas is ready.');
+        return;
+      }
+      if (snapshot) return;
+      if (m.type==='start') {
+        if(validStyle(m.stroke)&&validPoints(m.stroke.points)) beginCanonical(m.stroke);
+      } else if(m.type==='points') {
+        if(!appendCanonical(m)) requestSync();
+      } else if(m.type==='commit'||m.type==='history') {
+        if(m.rev!==revision+1) return requestSync();
+        if(!(m.type==='commit'?applyCommit(m):applyHistory(m))) requestSync();
+      } else if(m.type==='cursor') {
+        displayCursor(m);
+      } else if(m.type==='notice') {
+        if(typeof m.message!=='string'||m.message.length>300) return;
+        if(m.id) { pendingLocal.delete(m.id); if(local?.id===m.id){local=null;pointerId=null;} }
+        toast(m.message); invalidate(); updateUI();
+      }
+    }
+    function failSync() {
+      snapshot=null; if(hostLink) dropLink(hostLink,'Could not synchronize the board. Reconnecting…');
+    }
+
+    /* Bounded transport. Only cursor updates may be dropped; strokes and history
+       are reliable. Congestion disconnects and re-syncs instead of silently losing ink. */
+    function send(link,message,volatile=false) {
+      if(!link||link.closed||!link.conn.open) return false;
+      const buffered=link.conn.dataChannel?.bufferedAmount||0;
+      if(volatile&&(link.queue.length||buffered>C.highWater)) return true;
+      const bytes=JSON.stringify(message).length*2;
+      if(link.bytes+bytes>C.maxQueuedBytes) { dropLink(link,'The connection fell behind. Reconnecting…'); return false; }
+      link.queue.push({message,bytes}); link.bytes+=bytes; pump(link); return true;
+    }
+    function pump(link) {
+      clearTimeout(link.pumpTimer); link.pumpTimer=0;
+      if(link.closed||!link.conn.open) return;
+      let count=0;
+      try {
+        while(link.queue.length && (link.conn.dataChannel?.bufferedAmount||0)<C.highWater && (link.conn.bufferSize||0)<16 && count++<80) {
+          const item=link.queue.shift(); link.bytes-=item.bytes; link.conn.send(item.message);
+        }
+      } catch (_) { dropLink(link,'Connection interrupted. Reconnecting…'); return; }
+      if(link.queue.length) link.pumpTimer=setTimeout(()=>pump(link),12);
+    }
+    function broadcast(message,volatile=false,except=null) {
+      for(const link of clients.values()) if(link.accepted&&link!==except) send(link,message,volatile);
+    }
+    function makeLink(conn,name) {
+      const link={conn,name,queue:[],bytes:0,pumpTimer:0,closed:false,accepted:false,lastSeen:Date.now(),pingAt:0,latency:null,windowStart:Date.now(),messages:0,candidates:0,channelOpened:false};
+      const current=generation;
+      const pc=conn.peerConnection;
+      const updateProgress=()=>{
+        if(link.closed||current!==generation||mode!=='pad'||hostLink!==link||ready) return;
+        $('joinDescription').textContent=conn.open?'Connected to the host. Synchronizing your canvas…':pc?.remoteDescription?'Host found. Opening a direct drawing connection…':'Looking for your host. Keep both tabs open.';
+      };
+      // Count possible routes for a useful failure message. Never store or
+      // display candidate IP addresses, SDP, or network identifiers.
+      pc?.addEventListener('icecandidate',event=>{if(event.candidate)link.candidates++;});
+      pc?.addEventListener('signalingstatechange',updateProgress);
+      pc?.addEventListener('icegatheringstatechange',updateProgress);
+      conn.on('open',()=>{link.channelOpened=true;updateProgress();});
+      conn.on('iceStateChanged',state=>{
+        if(link.closed||current!==generation) return;
+        updateProgress();
+        if(state==='failed') dropLink(link,connectionFailureMessage(link));
+      });
+      conn.on('data',message=>{
+        if(link.closed||generation!==current||!isObject(message)) return;
+        link.lastSeen=Date.now();
+        if(link.lastSeen-link.windowStart>1000){link.windowStart=link.lastSeen;link.messages=0;}
+        // Only limit requests arriving from a pad. A valid host snapshot can
+        // contain thousands of bounded chunks and must not be mistaken for spam.
+        if(mode==='host' && ++link.messages>1200) return dropLink(link,'Too many messages from this device.');
+        if(message.type==='ping') { if(Number.isFinite(message.at)) send(link,{type:'pong',at:message.at},true); return; }
+        if(message.type==='pong') {
+          if(message.at===link.pingAt) {
+            link.latency=Math.max(0,Math.round(performance.now()-link.pingAt));
+            if(mode==='pad') $('latencyLabel').textContent=link.latency+' ms round trip'; else renderDevices();
+          }
+          return;
+        }
+        if(mode==='host') {
+          if(!link.accepted) {
+            if(message.type!=='hello'||message.v!==C.protocol) return dropLink(link,'Incompatible drawing pad.');
+            link.accepted=true; clearTimeout(link.helloTimer); sendSnapshot(link); renderDevices();
+          } else hostReceive(link,message);
+        } else if(hostLink===link) padReceive(message);
+      });
+      conn.on('close',()=>dropLink(link));
+      conn.on('error',()=>dropLink(link,'Connection interrupted. Reconnecting…'));
+      return link;
+    }
+    function connectionFailureMessage(link) {
+      const pc=link?.conn.peerConnection;
+      if(link?.channelOpened) return ready?'The direct connection was interrupted. Keep both tabs open while reconnecting.':'The devices connected, but the board did not finish synchronizing. Keep the host tab active and retry.';
+      if(pc?.iceGatheringState==='complete' && link.candidates===0) return 'This browser found no direct network route. Try both devices on the same Wi-Fi, or try a different browser.';
+      if(pc?.remoteDescription) return 'Host found, but a direct connection could not open. Try the same non-guest Wi-Fi; VPNs or network isolation can prevent pairing.';
+      return 'The host did not answer. Check the pairing code and keep the host tab open, then retry.';
+    }
+    function dropLink(link,message='') {
+      if(!link||link.closed) return;
+      // Capture the failure before PeerJS disposes of the RTCPeerConnection.
+      const issue=message||(ready?'Connection lost. Keep the host tab open; trying again…':connectionFailureMessage(link));
+      link.closed=true; clearTimeout(link.pumpTimer); clearTimeout(link.helloTimer); link.queue=[]; link.bytes=0;
+      try{link.conn.close();}catch(_){}
+      if(mode==='host') {
+        if(clients.get(link.conn.peer)===link) clients.delete(link.conn.peer);
+        finishOwner(link.conn.peer); renderDevices();
+      } else if(hostLink===link) {
+        hostLink=null; snapshot=null; clearTimeout(connectTimer);
+        abandonLocal('Connection lost. Any unconfirmed ink will be reconciled with the host.');
+        active.clear(); clearCursors(); setReady(false); invalidate();
+        lastPairingIssue=issue; showBanner(issue); scheduleRetry();
+      }
+    }
+    function attachIncoming(conn) {
+      if(mode!=='host'||conn.label!==C.label||clients.size>=C.maxPads||clients.has(conn.peer)) { conn.on('open',()=>conn.close()); return; }
+      const link=makeLink(conn,'Touch pad '+(++hostSerial)); clients.set(conn.peer,link);
+      link.helloTimer=setTimeout(()=>dropLink(link),C.connectTimeout);
+    }
+    function createPeer() {
+      if(typeof Peer==='undefined') {
+        setStatus('disconnected','Disconnected'); $('codeState').textContent='Unavailable';
+        showBanner('The connection library could not load. Check your internet connection, then reload this page.');
+        $('qrPlaceholderText').textContent='Pairing is unavailable. You can still draw here.'; return;
+      }
+      if(!window.RTCPeerConnection) {
+        setStatus('disconnected','Disconnected'); showBanner('This browser does not support WebRTC. Use a current Chrome, Safari, Firefox, or Edge browser.',false); return;
+      }
+      const current=generation;
+      // Explicit STUN-only configuration: no secret relay credentials in client HTML.
+      const options={debug:0,secure:true,config:{iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}]}};
+      try { peer=mode==='host'?new Peer(hostId,options):new Peer(options); }
+      catch(_){showBanner('Could not start a peer connection in this browser.');setStatus('disconnected','Disconnected');return;}
+      const instance=peer;
+      instance.on('open',id=>{
+        if(generation!==current||peer!==instance) return;
+        signalOpen=true; clearTimeout(signalTimer); clearTimeout(retryTimer); retryTimer=0;
+        if(mode==='host') {hostId=id;attempt=0;lastPairingIssue='';showBanner('');updatePairing();refreshStatus();}
+        else if(targetId&&!hostLink) connectToHost();
+        else {if(ready){lastPairingIssue='';showBanner('');}refreshStatus();}
+      });
+      instance.on('connection',conn=>{if(generation===current&&peer===instance)attachIncoming(conn);else conn.close();});
+      instance.on('disconnected',()=>{
+        if(generation!==current||peer!==instance) return;
+        signalOpen=false;
+        if(mode==='host') updatePairing();
+        refreshStatus();
+        if(mode==='host'||!ready) showBanner('Pairing service disconnected. Reconnecting…');
+        scheduleRetry();
+      });
+      instance.on('close',()=>{
+        if(generation!==current||peer!==instance) return;
+        signalOpen=false; if(mode==='host')updatePairing(); refreshStatus(); scheduleRetry();
+      });
+      instance.on('error',error=>{
+        if(generation!==current||peer!==instance) return;
+        if(error.type==='unavailable-id'&&mode==='host') {
+          instance.destroy(); peer=null; hostId='airink-'+randomCode(20); updatePairing(); scheduleRetry(); return;
+        }
+        const messages={
+          'peer-unavailable':'Host not found. Check the pairing code and keep the host tab open.',
+          'network':'The pairing service could not be reached. Check your internet connection.',
+          'server-error':'The pairing service is unavailable. Try again in a moment.',
+          'socket-error':'Could not reach the pairing service. Check your internet connection.',
+          'socket-closed':'The pairing service disconnected. Trying again…',
+          'webrtc':'A direct connection could not be established. Try the same Wi-Fi without a VPN.',
+          'browser-incompatible':'This browser does not support the required WebRTC features.'
+        };
+        const message=messages[error.type]||'Could not connect. Check the code and try the same Wi-Fi.';
+        lastPairingIssue=message;
+        if(mode==='pad'&&hostLink&&!ready) dropLink(hostLink,message);
+        else {showBanner(message); if(!ready||mode==='host')scheduleRetry();}
+      });
+      armSignalTimeout();
+    }
+    function armSignalTimeout() {
+      clearTimeout(signalTimer);
+      const current=generation, instance=peer;
+      signalTimer=setTimeout(()=>{
+        if(generation!==current||peer!==instance||signalOpen) return;
+        lastPairingIssue='The pairing service did not respond. Check your internet connection and retry. Drawing on the host still works.';
+        showBanner(lastPairingIssue); setStatus('disconnected','Disconnected'); scheduleRetry();
+      },C.connectTimeout);
+    }
+    function resumeNetwork() {
+      if(!peer||peer.destroyed) {createPeer();return;}
+      if(!signalOpen) {
+        if(!peer.id) {
+          // An anonymous peer whose ID request stalled cannot reconnect yet.
+          // It cannot have any established data channels, so replace only it.
+          const stalled=peer; peer=null; stalled.destroy(); createPeer(); return;
+        }
+        // Disconnecting signaling keeps established WebRTC data channels alive.
+        if(!peer.disconnected)peer.disconnect();
+        peer.reconnect(); armSignalTimeout(); return;
+      }
+      if(mode==='pad'&&!ready)connectToHost();
+    }
+    function connectToHost() {
+      if(mode!=='pad'||!targetId||!peer||peer.destroyed||!signalOpen||hostLink) return;
+      $('joinError').hidden=true; $('joinButton').disabled=true; $('joinButton').textContent='Connecting…';
+      $('joinDescription').textContent='Connecting to your host. Keep both tabs open.';
+      const conn=peer.connect(targetId,{label:C.label,reliable:true,serialization:'json',metadata:{v:C.protocol}});
+      const link=makeLink(conn,'Host'); hostLink=link; refreshStatus();
+      conn.on('open',()=>{
+        if(hostLink!==link||link.closed) return;
+        link.lastSeen=Date.now(); send(link,{type:'hello',v:C.protocol});
+      });
+      clearTimeout(connectTimer);
+      connectTimer=setTimeout(()=>{if(!ready&&hostLink===link)dropLink(link,connectionFailureMessage(link));},C.connectTimeout);
+    }
+    function scheduleRetry() {
+      if(retryTimer||(!targetId&&mode==='pad')) return;
+      if(attempt>=5) {
+        $('joinButton').disabled=false; $('joinButton').textContent='Connect to canvas';
+        refreshStatus(); if(mode==='host'&&!signalOpen)setStatus('disconnected','Disconnected');
+        showBanner(lastPairingIssue||'Could not pair the devices. Check the code, internet access, and Wi-Fi, then retry.'); return;
+      }
+      const current=generation, delay=Math.min(12000,900*2**attempt++);
+      retryTimer=setTimeout(()=>{
+        retryTimer=0;if(current!==generation)return;
+        try{resumeNetwork();}catch(_){scheduleRetry();}
+      },delay);
+      refreshStatus();
+    }
+    function retryNow() {
+      attempt=0; clearTimeout(retryTimer); retryTimer=0;
+      if(typeof Peer==='undefined') {location.reload();return;}
+      if(mode==='pad'&&!targetId) {$('joinCode').focus();showBanner('');return;}
+      if(mode==='pad'&&!ready&&hostLink)dropLink(hostLink);
+      clearTimeout(retryTimer);retryTimer=0;
+      if(signalOpen&&(mode==='host'||ready)){showBanner('');if(mode==='host')updatePairing();refreshStatus();return;}
+      try{resumeNetwork();}catch(_){scheduleRetry();}
+    }
+    function stopNetwork() {
+      generation++;clearTimeout(retryTimer);clearTimeout(connectTimer);clearTimeout(signalTimer);retryTimer=0;attempt=0;signalOpen=false;
+      for(const link of [...clients.values(),hostLink].filter(Boolean)) {
+        link.closed=true;clearTimeout(link.pumpTimer);clearTimeout(link.helloTimer);try{link.conn.close();}catch(_){}
+      }
+      clients.clear();hostLink=null;
+      if(peer){try{peer.destroy();}catch(_){}peer=null;}
+      clearCursors();
+      if(mode==='pad')setReady(false);
+    }
+    function isShareableLocation() {
+      return /^https?:$/.test(location.protocol)&&!['localhost','127.0.0.1','[::1]'].includes(location.hostname)&&!location.hostname.endsWith('.localhost');
+    }
+    function updatePairing() {
+      $('hostCode').textContent=hostId?fmtCode(hostId):'—';
+      $('copyCode').disabled=!hostId||!signalOpen;
+      $('codeState').textContent=signalOpen?'Ready to pair':'Unavailable';
+      $('qr').replaceChildren();$('qrPlaceholder').hidden=false;pairingURL='';
+      $('copyLink').disabled=true;
+      if(!signalOpen) {$('qrPlaceholderText').textContent='Waiting for the pairing service…';return;}
+      if(!isShareableLocation()) {
+        $('qrPlaceholderText').textContent='Publish this file to enable QR pairing.';
+        $('pairNote').textContent='Opened as a local file? Open the file on your phone too, then enter this code in Touch pad mode. For a scannable link, publish it on an HTTPS website.';
+        return;
+      }
+      const url=new URL(location.href);url.search='';url.hash='';url.searchParams.set('join',hostId);pairingURL=url.href;
+      $('copyLink').disabled=false;
+      if(typeof QRCode==='undefined') {$('qrPlaceholderText').textContent='QR unavailable. Copy the pairing link or enter the code.';return;}
+      try {
+        new QRCode($('qr'),{text:pairingURL,width:166,height:166,colorDark:'#122721',colorLight:'#edf5f2',correctLevel:QRCode.CorrectLevel.M});
+        $('qrPlaceholder').hidden=true;
+        $('pairNote').textContent='Anyone with this code can edit. Share it only with people you want on your board.';
+      }catch(_){$('qr').replaceChildren();$('qrPlaceholderText').textContent='This URL is too long for a QR code. Copy the pairing link instead.';}
+    }
+    async function copyText(value) {
+      try {
+        if(navigator.clipboard&&window.isSecureContext) await navigator.clipboard.writeText(value);
+        else {
+          const input=document.createElement('textarea');input.value=value;input.style.cssText='position:fixed;top:0;left:-9999px';document.body.append(input);input.select();
+          const ok=document.execCommand('copy');input.remove();if(!ok)throw new Error('copy');
+        }
+        toast('Copied. Open it on your other device.');
+      }catch(_){window.prompt('Copy this pairing code or link:',value);}
+    }
+
+    /* Mode changes are deliberate and end the current in-memory session. */
+    async function confirm(title,copy,action) {
+      const d=$('confirmDialog');
+      if(typeof d.showModal!=='function') return window.confirm(title+'\n'+copy);
+      if(d.open) return false;
+      $('confirmTitle').textContent=title;$('confirmCopy').textContent=copy;$('confirmAccept').textContent=action;
+      d.returnValue='cancel';d.showModal();
+      return new Promise(resolve=>d.addEventListener('close',()=>resolve(d.returnValue==='confirm'),{once:true}));
+    }
+    async function changeMode(next,join='',initial=false) {
+      if(!initial&&next===mode) return;
+      if(!initial&&(done.length||onlineClients().length||ready&&mode==='pad')) {
+        if(!await confirm('Switch device mode?','This ends your current connection. A hosted board is kept only while its host tab stays in the same mode.','Switch mode'))return;
+      }
+      finishPointer();stopNetwork();abandonLocal();mode=next;targetId=join;snapshot=null;lastPairingIssue='';
+      done=[];undone=[];active.clear();revision=0;totalPoints=0;hostSerial=0;
+      document.body.dataset.mode=mode;document.body.classList.remove('show-pair');
+      $('pairToggle').setAttribute('aria-expanded','false');$('pairToggle').hidden=mode==='pad';
+      $('hostMode').setAttribute('aria-pressed',String(mode==='host'));$('padMode').setAttribute('aria-pressed',String(mode==='pad'));
+      $('boardModeLabel').textContent=mode==='host'?'/ Host canvas':'/ Touch pad';
+      $('emptyTitle').textContent=mode==='host'?'A little room for big ideas.':'Your canvas is connected.';
+      $('emptyCopy').textContent=mode==='host'?'Draw here, or pair your phone and make it your drawing pad.':'Draw with your finger or stylus. The host follows along.';
+      $('latencyLabel').textContent=mode==='host'?'Ready when you are':'Waiting to connect';
+      $('joinDescription').textContent='Enter the pairing code from the host canvas, or scan its QR code with your camera.';
+      $('joinError').hidden=true;$('joinButton').disabled=false;$('joinButton').textContent='Connect to canvas';
+      $('joinCode').value=join?fmtCode(join):'';
+      showBanner('');setReady(mode==='host');renderDevices();invalidate(true);requestAnimationFrame(fitCanvas);
+      if(mode==='host'){hostId='airink-'+randomCode(20);updatePairing();}
+      // Replace rather than push history; never put drawing contents in the URL.
+      try {const url=new URL(location.href);url.search='';url.hash='';if(join)url.searchParams.set('join',join);history.replaceState(null,'',url);}catch(_){}
+      if(booted)createPeer();
+    }
+    function joinRoom(event) {
+      event.preventDefault();const id=parseCode($('joinCode').value);
+      if(!id){$('joinError').textContent='Enter the complete pairing code or link from the host.';$('joinError').hidden=false;return;}
+      if(hostLink){const old=hostLink;hostLink=null;old.closed=true;clearTimeout(old.pumpTimer);try{old.conn.close();}catch(_){}}
+      targetId=id;attempt=0;clearTimeout(retryTimer);retryTimer=0;snapshot=null;
+      $('joinError').hidden=true;showBanner('');
+      try{const url=new URL(location.href);url.searchParams.set('join',id);history.replaceState(null,'',url);}catch(_){}
+      if(!peer||peer.destroyed)createPeer();else if(peer.disconnected)retryNow();else connectToHost();
+    }
+    function setTool(value) {
+      tool=value;
+      for(const button of document.querySelectorAll('[data-tool]'))button.setAttribute('aria-pressed',String(button.dataset.tool===tool));
+      $('brushSize').value=sizes[tool];$('sizeValue').textContent=sizes[tool];
+    }
+    function setColor(value) {
+      color=value.toLowerCase();$('colorPicker').value=color;
+      for(const b of document.querySelectorAll('[data-color]'))b.setAttribute('aria-pressed',String(b.dataset.color===color));
+      if(tool==='eraser')setTool('pen');
+    }
+    function historyAction(action) {
+      if(local)finishPointer();
+      const button=$(action==='undo'?'undoButton':action==='redo'?'redoButton':'clearButton');
+      if(!button.disabled)submit({type:'history',action});
+    }
+    for(const b of document.querySelectorAll('[data-tool]'))b.addEventListener('click',()=>setTool(b.dataset.tool));
+    for(const b of document.querySelectorAll('[data-color]'))b.addEventListener('click',()=>setColor(b.dataset.color));
+    $('colorPicker').addEventListener('input',e=>setColor(e.target.value));
+    $('brushSize').addEventListener('input',e=>{sizes[tool]=Number(e.target.value);$('sizeValue').textContent=sizes[tool];});
+    $('undoButton').addEventListener('click',()=>historyAction('undo'));
+    $('redoButton').addEventListener('click',()=>historyAction('redo'));
+    $('clearButton').addEventListener('click',async()=>{if(await confirm('Clear this canvas?','This clears the board for every connected device. You can undo it.','Clear canvas'))historyAction('clear');});
+    $('hostMode').addEventListener('click',()=>changeMode('host'));
+    $('padMode').addEventListener('click',()=>changeMode('pad'));
+    $('joinCard').addEventListener('submit',joinRoom);
+    $('retryButton').addEventListener('click',retryNow);
+    $('copyCode').addEventListener('click',()=>copyText(fmtCode(hostId)));
+    $('copyLink').addEventListener('click',()=>{if(pairingURL)copyText(pairingURL);});
+    $('pairToggle').addEventListener('click',()=>{const open=document.body.classList.toggle('show-pair');$('pairToggle').setAttribute('aria-expanded',String(open));});
+    const showHelp=()=>{if(!$('helpDialog').open)$('helpDialog').showModal();};
+    $('helpButton').addEventListener('click',showHelp);$('aboutButton').addEventListener('click',showHelp);$('helpClose').addEventListener('click',()=>$('helpDialog').close());
+    window.addEventListener('keydown',e=>{
+      if(e.target.matches('input,textarea,select,[contenteditable="true"]')||document.querySelector('dialog[open]'))return;
+      const key=e.key.toLowerCase();
+      if((e.metaKey||e.ctrlKey)&&(key==='z'||key==='y')){e.preventDefault();historyAction(key==='y'||e.shiftKey?'redo':'undo');return;}
+      if(e.metaKey||e.ctrlKey||e.altKey)return;
+      if(['p','m','e'].includes(key)){e.preventDefault();setTool({p:'pen',m:'marker',e:'eraser'}[key]);}
+      if(key==='['||key===']'){e.preventDefault();sizes[tool]=Math.max(2,Math.min(64,sizes[tool]+(key==='['?-1:1)));setTool(tool);}
+      if(key==='escape'){document.body.classList.remove('show-pair');$('pairToggle').setAttribute('aria-expanded','false');}
+    });
+    document.addEventListener('visibilitychange',()=>{
+      if(document.hidden){finishPointer();sendCursor(null,true);}
+      else {
+        for(const link of [...clients.values(),hostLink].filter(Boolean))link.lastSeen=Date.now();
+        if(mode==='pad'&&!ready&&targetId)retryNow();
+        fitCanvas();
+      }
+    });
+    window.addEventListener('online',()=>{if(!signalOpen||(mode==='pad'&&!ready))retryNow();});
+    window.addEventListener('offline',()=>showBanner('You are offline. Existing direct connections may keep working; new pairing needs internet access.'));
+    // Lifecycle cleanup also commits an already transmitted partial remote stroke on the host.
+    window.addEventListener('pagehide',()=>{finishPointer();stopNetwork();});
+    window.addEventListener('pageshow',e=>{if(e.persisted)retryNow();});
+    window.addEventListener('beforeunload',e=>{if(mode==='host'&&(done.length||onlineClients().length)){e.preventDefault();e.returnValue='';}});
+    setInterval(()=>{
+      if(document.hidden)return;
+      const now=Date.now();
+      for(const link of [...clients.values(),hostLink].filter(Boolean)) {
+        if(link.closed||!link.conn.open)continue;
+        if(now-link.lastSeen>45000){dropLink(link,'The other device stopped responding. Reconnecting…');continue;}
+        link.pingAt=performance.now();send(link,{type:'ping',at:link.pingAt},true);
+      }
+    },C.heartbeat);
+
+    const requested=new URLSearchParams(location.search).get('join');
+    const validJoin=validRoom(requested)?requested:'';
+    const mobileDefault=matchMedia('(pointer: coarse)').matches&&innerWidth<1000;
+    changeMode(requested||mobileDefault?'pad':'host',validJoin,true);
+    if(requested&&!validJoin){$('joinError').textContent='This pairing link is invalid. Enter a fresh code from the host.';$('joinError').hidden=false;}
+    function boot(){if(booted)return;booted=true;createPeer();}
+    if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
+    setTimeout(()=>{if(!booted&&typeof Peer==='undefined')showBanner('The connection library is still loading. Drawing is ready; pairing needs internet access.');},9000);
+
+    // Optional browser-native agent controls. No dependency, network request, or
+    // drawing content is exposed by these tools; unsupported browsers skip them.
+    if (document.modelContext?.registerTool) {
+      const lifecycle = new AbortController();
+      const register = definition => {
+        try { Promise.resolve(document.modelContext.registerTool(definition,{signal:lifecycle.signal})).catch(()=>{}); } catch (_) {}
+      };
+      register({
+        name:'read_whiteboard_status',description:'Read the device mode, connection state, stroke count, and selected drawing tool. Does not return drawing content or pairing credentials.',
+        inputSchema:{type:'object',properties:{},additionalProperties:false},
+        annotations:{readOnlyHint:true,untrustedContentHint:false},
+        execute(input){
+          if(!isObject(input)||Object.keys(input).length)throw new Error('No arguments are accepted.');
+          return {mode,connected:mode==='host'?onlineClients().length>0:ready,strokes:visibleStrokes(),tool,color,size:sizes[tool],canUndo:!$('undoButton').disabled,canRedo:!$('redoButton').disabled};
+        }
+      });
+      register({
+        name:'configure_drawing_tool',description:'Select the visible pen, highlighter, or eraser and optionally set its color and size. Does not draw or change shared history.',
+        inputSchema:{type:'object',properties:{tool:{type:'string',enum:['pen','marker','eraser']},color:{type:'string',pattern:'^#[0-9a-fA-F]{6}$'},size:{type:'integer',minimum:2,maximum:64}},required:['tool'],additionalProperties:false},
+        annotations:{readOnlyHint:false,untrustedContentHint:false},
+        execute(input){
+          if(!isObject(input)||Object.keys(input).some(k=>!['tool','color','size'].includes(k))||!['pen','marker','eraser'].includes(input.tool)||(input.color!==undefined&&!/^#[0-9a-f]{6}$/i.test(input.color))||(input.size!==undefined&&(!Number.isInteger(input.size)||input.size<2||input.size>64)))throw new Error('Choose a valid tool, hex color, and a size from 2 to 64.');
+          if(input.color!==undefined)setColor(input.color);
+          if(input.size!==undefined)sizes[input.tool]=input.size;
+          setTool(input.tool);return {tool,color,size:sizes[tool]};
+        }
+      });
+      window.addEventListener('pagehide',()=>lifecycle.abort(),{once:true});
+    }
+  })();
+  </script>
+</body>
+</html>
